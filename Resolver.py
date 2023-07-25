@@ -2,8 +2,11 @@ import socket
 import sys
 import struct
 from helpers import parseResponse
+import pprint
 
 def checkIfAnswer(response):
+    if len(response) < 12:
+        return False
     byteHeader = response[0:12] # First 12 bytes are the header as specified by RFC 1035.
 
     unpackedHeader = struct.unpack('!HHHHHH', byteHeader) # Get header
@@ -59,13 +62,51 @@ while True:
         isAnswer = checkIfAnswer(message)
         # Check if an answer was recieved from server.
         if isAnswer:
-            # print(parseResponse(message))
+
+            data = parseResponse(message, False)
+            # pp = pprint.PrettyPrinter(indent=2)
+            # pp.pprint(data)
             serverSocket.sendto(message, clientAddress) # Send it back to client for parsing.
             clientAddress = None
             clientQuery = None
         else:
-            currServer = parseResponse(message)['additionals'][0]
-            dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+            # pp = pprint.PrettyPrinter(indent=2)
+            # pp.pprint(data)
+
+            data = parseResponse(message, False)
+
+            if data['rcode'] == 'SERVFAIL':
+                if currServer == rootServers[-1]:
+                    serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
+                    clientAddress = None
+                    clientQuery = None
+                elif currServer in rootServers and currServer != rootServers[-1]:
+                    currServer = rootServers[rootServers.index(currServer) + 1]
+                    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                elif len(prevData['additionals']) > 0:
+                    currServer = prevData['additionals'][0]
+                    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                else:
+                    serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
+                    clientAddress = None
+                    clientQuery = None
+            elif data['rcode'] == 'NXDOMAIN' or data['rcode'] == 'FORMERR':
+                serverSocket.sendto(message, clientAddress) # Send it back to client for parsing.
+                clientAddress = None
+                clientQuery = None # End query resolving processs.
+            else:
+                currServer = data['additionals'][0]
+                dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                data['additionals'].pop(0) # Remove exhausted ip
+                prevData = data # Only save data from last iterative query once a valid response was given.
+
+
+
+
+
+
+
+
 
 
 
