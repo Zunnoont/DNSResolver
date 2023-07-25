@@ -1,7 +1,8 @@
 import sys
 import socket
 import struct
-from helpers import getName
+from helpers import *
+import pprint
 
 # Codes determined using "RFC 1035 Section 3.2.2 Type Values"
 # Source: https://datatracker.ietf.org/doc/html/rfc1035
@@ -20,7 +21,8 @@ types = {
     'HINFO': 13,
     'MINFO': 14,
     'MX': 15,
-    'TXT': 16
+    'TXT': 16,
+    'AAAA': 28
 }
 qclass = {
     'IN': 1,
@@ -116,176 +118,121 @@ def createQuery(queryType):
 
     qtype = types[queryType]
 
+    if invertedTypes[qtype] == 'PTR':
+        qname = encodePTRName(name)
+
     qclassInfo = qclass['IN']
 
     question = qname + struct.pack("!HH", qtype, qclassInfo)
 
     query = headerData + question
-
+    # FORMERR query for testing
+    # query = b'\x01\x00\x01\x00\x00\x01\x00\x00\x00\x00\x03www\x06example\x03com\x00\x00\x01\x00\x01'
     return query
+def encodePTRName(ipAdresss):
+    # # Split the IP address into its octets and reverse them
+    # reversed_ip_octets = ipAdresss.split('.')[::-1]
 
-def parseQuestion(response):
-    index = 0
+    # # Append the ".in-addr.arpa" suffix
+    # reversed_ip_with_suffix = '.'.join(reversed_ip_octets) + ".in-addr.arpa"
 
-    #Initial index response[0] will have the length
-    # of the label as specified by RDC 1035, so we can skip
-    # over the question data by adding the length + 1.
+    # # Encode each label in the reversed IP address with its length
+    # encoded_labels = []
+    # for label in reversed_ip_with_suffix.split('.'):
+    #     encoded_labels.append(bytes([len(label)]) + label.encode('utf-8'))
 
-    while response[index] != 0:
-        index += response[index] + 1
+    # # Concatenate the encoded labels and add a null terminator
+    # encoded_qname = b''.join(encoded_labels) + b'\x00'
 
-    return index + 1 # index is at null byte.
+    # return encoded_qname
+    ipBytes = ipAdresss.split('.')
 
-def parseNameSection(response):
-    nameSize = 0
+    ipBytes.reverse()
 
-    # The compression scheme allows a domain name in a message to be
-    # represented as either:
+    name = b''
 
-    #      - a sequence of labels ending in a zero octet - Case 1
+    for x in ipBytes:
+        length = len(x)
+        name += struct.pack('!B', length) + x.encode()
 
-    #    - a pointer - Case 2
+    length = len("IN-ADDR")
+    name += struct.pack('!B', length) + "IN-ADDR".encode()
 
-    #    - a sequence of labels ending with a pointer - Case 3
-    while True:
-        currByte = response[nameSize]
-        nameSize += 1
-        if(currByte == 0):
-            break # Null terminator reached (Case 1)
-        elif currByte & 0xC0 == 0xC0:
-            nameSize += 1 # Pointer is 2 octet.
-            break # Found pointer at end of name section (Case 2 or 3)
+    length = len("ARPA")
+    name += struct.pack('!B', length) + "ARPA".encode()
 
-        nameSize += currByte # If not, must be sequence label length
-    return nameSize
-def parseAnswer(response):
+    name += b'\x00'
 
-    index = parseNameSection(response) # Skip over name section
-
-    ansType, ansClass, ansTTL, ansRdlength = struct.unpack('!HHLH', response[index:12])
-
-    rData = struct.unpack('!' + 'B'*ansRdlength, response[12: 12 + ansRdlength])
-
-    index = 12 + ansRdlength
-
-    if invertedTypes[ansType] == 'A':
-        answer = list(rData)
-        answer = [str(item) for item in answer]
-        answer = '.'.join(answer)
-    else:
-        answer = getName(response[12: 12 + ansRdlength], modifiedMessage) # If not ip, decode as domain name.
-
-    print(f"{name}\t{ansTTL}\t{invertedClasses[ansClass]}\t{invertedTypes[ansType]}\t{answer}")
-
-    return index
-
-def separateFlags(flags):
-
-    # Reference for how query flags were encoded.
-    # header_flags = (qr << 15) | (opcode << 11) | (aa << 10) | (tc << 9) | (rd << 8) | (ra << 7) | (z << 4) | rcode
-
-    rcode = flags & 0xF
-
-    z = (flags >> 4) & 0x7
-
-    ra = (flags >> 7) & 0x1
-
-    rd = (flags >> 8) & 0x1
-
-    tc = (flags >> 9) & 0x1
-
-    aa = (flags >> 10) & 0x1
-
-    opCode = (flags >> 11) & 0xF
-
-    qr = (flags >> 15) & 0x1
-
-    flagsSeparated = {
-        "rcode": rcode,
-        "z": z,
-        "ra": ra,
-        "rd": rd,
-        "tc": tc,
-        "aa": aa,
-        "opcode": opCode,
-        "qr": qr,
-    }
-
-    return flagsSeparated
-
-def parseResponse(response):
-    print("Got Answer:")
-
-    byteHeader = response[0:12] # First 12 bytes are the header as specified by RFC 1035.
-
-    unpackedHeader = struct.unpack('!HHHHHH', byteHeader) # Get header
-
-    queryId = unpackedHeader[0]
-
-    flags = separateFlags(unpackedHeader[1])
-
-    opCode = opcodeTypes[flags["opcode"]]
-
-    rCode = rcodeTypes[flags["rcode"]]
-
-    print(f"->>HEADER<<- opcode: {opCode}, status: {rCode}, id: {queryId}")
-
-    flags.pop("opcode")
-    flags.pop("rcode")
-
-    usedFlags =  {k:v for (k,v) in flags.items() if v == 1}
-
-    enabledFlags = ' '.join(usedFlags.keys())
-
-    qCount, ansCount, nsCount, arCount = unpackedHeader[2:] # Pos 0 is ID, Pos 1 is Flags, Pos 2-5 is counts
-
-    print(f"flags: {enabledFlags}; QUERY: {qCount}, ANSWER: {ansCount}, AUTHORITY: {nsCount}, ADDITIONAL: {arCount}")
-    answerIndex = 0
-
-    print("QUESTION SECTION:")
-    for count in range(0, qCount):
-        answerIndex = parseQuestion(response[(12 + answerIndex):])
-
-        qType = struct.unpack("!H", response[12 + answerIndex: 14 + answerIndex])[0] # answerIndex + 12 starts at qtype,
-
-        qClassData = struct.unpack("!H", response[14 + answerIndex: 16 + answerIndex])[0] ## answerIndex + 14 starts at qclass
-
-        answerIndex += 4 # Got data from 4 bytes containing qtype and qclass.
-
-        print(f"{name}.\t\t{invertedClasses[qClassData]}\t{invertedTypes[qType]}")
-
-    answerIndex += 12
-
-    print("\nANSWER SECTION:")
-
-    for count in range(0, ansCount):
-        # Have to update answer index here
-        answerIndex += parseAnswer(response[answerIndex:])
-
-    print("AUTHORITY SECTION:")
-    for count in range(0, nsCount):
-        answerIndex += parseAnswer(response[answerIndex:])
-    return
+    return name
 
 def printResponse(response):
-    print("Got Answer:")
-    data = parseResponse(response)
+    pp = pprint.PrettyPrinter(indent=2)
 
+    data = parseResponse(response, True)
+
+    pp.pprint(data)
+
+    queryId = data['id']
+
+    opCode = data['opcode']
+
+    rCode = data['rcode']
+
+    if data['rcode'] == 'SERVFAIL':
+        print("ERROR: Resolver encountered a server failure when querying a Name Server.")
+        return
+    elif data['rcode'] == 'NXDOMAIN':
+        print(f"NAME ERROR: Server couldn't find record associated with {name}")
+        return
+    elif data['rcode'] == 'FORMERR':
+        print("FORM ERROR: Server encountered a format issue with your query.")
+        return
+
+    enabledFlags = data['enabledFlags']
+
+    qCount = data['qcount']
+
+    ansCount = data['anscount']
+
+    nsCount = data['nscount']
+
+    arCount = data['arcount']
+    print("Got Answer:")
     print(f"->>HEADER<<- opcode: {opCode}, status: {rCode}, id: {queryId}")
 
     print(f"flags: {enabledFlags}; QUERY: {qCount}, ANSWER: {ansCount}, AUTHORITY: {nsCount}, ADDITIONAL: {arCount}")
 
     print("QUESTION SECTION:")
     for count in range(0, qCount):
+        qClassData = data['qClasses'][count]
+
+        qType = data['qTypes'][count]
         print(f"{name}.\t\t{invertedClasses[qClassData]}\t{invertedTypes[qType]}")
 
     print("\nANSWER SECTION:")
     for count in range(0, ansCount):
-        print(f"{name}\t{ansTTL}\t{invertedClasses[ansClass]}\t{invertedTypes[ansType]}\t{answer}")
+        ansExtras = data['answersExtras'][count]
+        ansType = ansExtras["ansType"]
+        ansClass = ansExtras["ansClass"]
+        ansTTL = ansExtras["ansTTL"]
+        ansRdlength = ansExtras["ansRdlength"]
 
+        answer = data['answers'][count]
+        if ansType == qType:
+            print(f"{name}\t{ansTTL}\t{invertedClasses[ansClass]}\t{invertedTypes[ansType]}\t{answer}")
+    print("\n")
+    print("AUTHORITY SECTION:")
+    for count in range(0, nsCount):
+        authExtras = data['nsExtras'][count]
+        authType = authExtras["ansType"]
+        authClass = authExtras["ansClass"]
+        authTTL = authExtras["ansTTL"]
+        authRdlength = authExtras["ansRdlength"]
 
+        answer = data['ns'][count]
+        print(f"{name}\t{authTTL}\t{invertedClasses[authClass]}\t{invertedTypes[authType]}\t{answer}")
 if len(sys.argv) < 5:
-    print("Error: invalid arguments\nUsage: python3 Client.py [resolver_ip] [resolver_port] [name] [type]", file=sys.stderr)
+    print("Error: invalid arguments\nUsage: python3 Client.py [resolver_ip] [resolver_port] [name] [type] [timeout=5]", file=sys.stderr)
     sys.exit()
 
 resolverIP = sys.argv[1]
@@ -296,40 +243,23 @@ name = sys.argv[3]
 
 queryTypeArg = sys.argv[4].upper()
 
+if len(sys.argv) < 6:
+    timeout = 5
+elif len(sys.argv) == 6:
+    timeout = sys.argv[5]
+
 client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+client.settimeout(float(timeout))
 
 # UDP is connectionless so no connecting to server like with TCP.
 client.sendto(createQuery(queryTypeArg), (resolverIP, int(resolverPort)))
+try:
+    modifiedMessage, serverAddress = client.recvfrom(2048)
+except socket.timeout:
+    print("ERROR TIMEOUT: Client did not recieve response within timeout period.")
+    exit()
 
-modifiedMessage, serverAddress = client.recvfrom(2048)
-
-parseResponse(modifiedMessage)
+printResponse(modifiedMessage)
 
 client.close()
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
