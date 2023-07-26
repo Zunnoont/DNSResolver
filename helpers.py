@@ -19,7 +19,7 @@ types = {
     'HINFO': 13,
     'MINFO': 14,
     'MX': 15,
-    'TXT': 16
+    'TXT': 16,
 }
 qclass = {
     'IN': 1,
@@ -124,40 +124,72 @@ def getName(response, entireQuery):
 
 
     return name
-def parseAnswer(response, sectionName):
+
+def parseMXRdata(response, rdLength, index):
+
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                  PREFERENCE                   |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # /                   EXCHANGE                    /
+    # /                                               /
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    preference = struct.unpack("!H", response[index + 10: index + 12])
+    exchange = struct.unpack('!' + 'B'* (rdLength - 2), response[index + 12: index + 10 + rdLength])
+
+    answer = getName(response[index + 12: index + 10 + rdLength], dnsResponse) # If not ip, decode as domain name.
+
+    answer = str(preference[0]) + " " + answer
+    return answer
+
+def parseAnswer(response, sectionName, answer):
 
     index = parseNameSection(response) # Skip over name section
 
-    ansType, ansClass, ansTTL, ansRdlength = struct.unpack('!HHLH', response[index:12])
+    ansType, ansClass, ansTTL, ansRdlength = struct.unpack('!HHLH', response[index:index + 10])
 
-    rData = struct.unpack('!' + 'B'*ansRdlength, response[12: 12 + ansRdlength])
-
-    index = 12 + ansRdlength
+    rData = struct.unpack('!' + 'B'*ansRdlength, response[index + 10: index + 10 + ansRdlength])
 
 
-    if ansType in invertedTypes:
-        answer = list(rData)
-        answer = [str(item) for item in answer]
-        answer = '.'.join(answer)
+    dnsData[sectionName + "Extras"].append({
+        "ansType": ansType,
+        "ansClass": ansClass,
+        "ansTTL": ansTTL,
+        "ansRdlength": ansRdlength,
+    })
+
+    if ansType in invertedTypes and ansType != 28:
+        if invertedTypes[ansType] == 'MX':
+            answer = parseMXRdata(response, ansRdlength, index)
+        elif invertedTypes[ansType] == 'A':
+            answer = list(rData)
+            answer = [str(item) for item in answer]
+            answer = '.'.join(answer)
+        else:
+            answer = getName(response[index + 10: index + 10 + ansRdlength], dnsResponse) # If not ip, decode as domain name.
         dnsData[sectionName].append(answer)
-        if getName(response[12: 12 + ansRdlength], dnsResponse) != "" and sectionName == 'ns':
-            dnsData[sectionName].append(getName(response[12: 12 + ansRdlength], dnsResponse))
 
+    index = index + 10 + ansRdlength
+    # if answer:
+    #     if invertedTypes[ansType] == 'A':
+    #         answer = list(rData)
+    #         answer = [str(item) for item in answer]
+    #         answer = '.'.join(answer)
+    #     else:
+    #         answer = getName(response[12: 12 + ansRdlength], dnsResponse) # If not ip, decode as domain name.
+    #     dnsData[sectionName].append(answer)
+    # else:
+    #     if ansType in invertedTypes and ansType != 28:
+    #         print(invertedTypes[ansType])
+    #         answer = list(rData)
+    #         answer = [str(item) for item in answer]
+    #         answer = '.'.join(answer)
+    #         dnsData[sectionName].append(answer)
+    #         if getName(response[12: 12 + ansRdlength], dnsResponse) != "" and sectionName == 'ns':
+    #             answer = getName(response[12: 12 + ansRdlength], dnsResponse)
+
+    #         dnsData[sectionName].append(answer)
     return index
 
-def getAnswer(response):
-    index = parseNameSection(response) # Skip over name section
-
-    ansType, ansClass, ansTTL, ansRdlength = struct.unpack('!HHLH', response[index:12])
-
-    rData = struct.unpack('!' + 'B'*ansRdlength, response[12: 12 + ansRdlength])
-
-    index = 12 + ansRdlength
-    answer = list(rData)
-    answer = [str(item) for item in answer]
-    answer = '.'.join(answer)
-
-    return answer
 def separateFlags(flags):
 
     # Reference for how query flags were encoded.
@@ -192,7 +224,7 @@ def separateFlags(flags):
 
     return flagsSeparated
 
-def parseResponse(response):
+def parseResponse(response, answer):
 
     global dnsResponse; dnsResponse = response
 
@@ -210,7 +242,11 @@ def parseResponse(response):
 
     opCode = opcodeTypes[flags["opcode"]]
 
+    dnsData['opcode'] = opCode
+
     rCode = rcodeTypes[flags["rcode"]]
+
+    dnsData['rcode'] = rCode
 
     flags.pop("opcode")
     flags.pop("rcode")
@@ -228,13 +264,19 @@ def parseResponse(response):
     dnsData['anscount'] = ansCount
     dnsData['nscount'] = nsCount
     dnsData['arcount'] = arCount
+    dnsData['qTypes'] = []
+    dnsData['qClasses'] = []
 
     for count in range(0, qCount):
         answerIndex = parseQuestion(response[(12 + answerIndex):])
 
         qType = struct.unpack("!H", response[12 + answerIndex: 14 + answerIndex])[0] # answerIndex + 12 starts at qtype,
+        dnsData['qTypes'].append(qType)
+
 
         qClassData = struct.unpack("!H", response[14 + answerIndex: 16 + answerIndex])[0] ## answerIndex + 14 starts at qclass
+
+        dnsData['qClasses'].append(qClassData)
 
         answerIndex += 4 # Got data from 4 bytes containing qtype and qclass.
 
@@ -243,11 +285,15 @@ def parseResponse(response):
     dnsData['answers'] = []
     dnsData['ns'] = []
     dnsData['additionals'] = []
+
+    dnsData["answersExtras"] = []
+    dnsData["nsExtras"] = []
+    dnsData["additionalsExtras"] = []
     for count in range(0, ansCount):
         # Have to update answer index here
-        answerIndex += parseAnswer(response[answerIndex:], 'answers')
+        answerIndex += parseAnswer(response[answerIndex:], 'answers', answer)
     for count in range(0, nsCount):
-        answerIndex += parseAnswer(response[answerIndex:], 'ns')
+        answerIndex += parseAnswer(response[answerIndex:], 'ns', answer)
     for count in range(0, arCount):
-        answerIndex += parseAnswer(response[answerIndex:], 'additionals')
+        answerIndex += parseAnswer(response[answerIndex:], 'additionals', answer)
     return dnsData
