@@ -3,6 +3,7 @@ import socket
 import struct
 from helpers import *
 import pprint
+import time
 
 # Codes determined using "RFC 1035 Section 3.2.2 Type Values"
 # Source: https://datatracker.ietf.org/doc/html/rfc1035
@@ -170,7 +171,7 @@ def printResponse(response):
 
     data = parseResponse(response, True)
 
-    pp.pprint(data)
+    # pp.pprint(data)
 
     queryId = data['id']
 
@@ -252,14 +253,53 @@ client = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
 client.settimeout(float(timeout))
 
+timeStart = time.time()
 # UDP is connectionless so no connecting to server like with TCP.
 client.sendto(createQuery(queryTypeArg), (resolverIP, int(resolverPort)))
 try:
     modifiedMessage, serverAddress = client.recvfrom(2048)
+    timeEnd = time.time()
 except socket.timeout:
+    timeEnd = time.time()
     print("ERROR TIMEOUT: Client did not recieve response within timeout period.")
+    print(f"\nQuery time: {round(timeEnd - timeStart, 4)} sec")
+    exit()
+
+
+if len(modifiedMessage) < 12:
+    print("ERROR TIMEOUT: All DNS Servers contacted by resolver timed out.")
+    print(f"\nQuery time: {round(timeEnd - timeStart, 4)} sec")
     exit()
 
 printResponse(modifiedMessage)
 
+print(f"\nQuery time: {round(timeEnd - timeStart, 4)} sec")
+
 client.close()
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
