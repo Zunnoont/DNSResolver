@@ -1,7 +1,7 @@
 import socket
 import sys
 import struct
-from helpers import parseResponse
+from helpers import parseResponse, createQuery, resolverIntermediaryQuery
 import copy
 
 def checkIfAnswer(response):
@@ -44,6 +44,8 @@ clientAddress = None
 clientQuery = None
 
 dnsSocket.settimeout(float(timeout))
+
+encounteredAnswers = []
 
 # Reference: File reading format obtained from:
 # https://stackoverflow.com/questions/15599639/what-is-the-perfect-counterpart-in-python-for-while-not-eof
@@ -88,6 +90,7 @@ while True:
 
             data = parseResponse(message, False)
             serverSocket.sendto(message, clientAddress) # Send it back to client for parsing.
+            encounteredAnswers = []
             clientAddress = None
             clientQuery = None
         else:
@@ -95,6 +98,7 @@ while True:
                 if currServer == rootServers[-1]:
                     message = "timeout".encode()
                     serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
+                    encounteredAnswers = []
                     clientAddress = None
                     clientQuery = None
                 elif currServer in rootServers and currServer != rootServers[-1]:
@@ -107,16 +111,37 @@ while True:
                 else:
                     message = "timeout".encode()
                     serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
+                    encounteredAnswers = []
                     clientAddress = None
                     clientQuery = None
             else:
                 data = parseResponse(message, False)
+                # If currServer doesnt have IP address information, get it ourselves
+                if data['additionals'] == [] and len(data['ns']) > 0:
+                    queryToSend = createQuery('A', data['ns'][0][:-1])
+                    currAnswer = resolverIntermediaryQuery(dnsSocket, rootServers, queryToSend)
+
+                    if currAnswer != {} and currServer in currAnswer['answers']:
+                        currAnswer['answers'].remove(currServer) # Avoid self loop
+                    if currAnswer != {}:
+                        for answerCurr in currAnswer['answers']:
+                            if answerCurr in encounteredAnswers:
+                                currAnswer['answers'].remove(answerCurr) # Avoid infinite loop of contacting same servers, also avoid back and forth reference.
+                                # Where server A points to Server B and Server B points to Server A
+                    if currAnswer != {} and len(currAnswer['answers']) > 0 and currAnswer['answers'][0] not in encounteredAnswers:
+
+                        currServer = currAnswer['answers'][0]
+
+                        encounteredAnswers.append(currServer)
+                        dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+
                 # If some issue occurs with the server, exhaust all ips
-                if data['rcode'] == 'SERVFAIL' or data['rcode'] == 'REFUSED' or data['additionals'] == []:
+                elif data['rcode'] == 'SERVFAIL' or data['rcode'] == 'REFUSED' or data['additionals'] == []:
                     if currServer == rootServers[-1]:
                         serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
                         clientAddress = None
                         clientQuery = None
+                        encounteredAnswers = []
                     elif currServer in rootServers and currServer != rootServers[-1]:
                         currServer = rootServers[rootServers.index(currServer) + 1]
                         dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
@@ -126,10 +151,12 @@ while True:
                         prevData['additionals'].pop(0) # Remove exhausted ip
                     else:
                         serverSocket.sendto(message, clientAddress) # Send it back to client for parsing as all roots exhausted.
+                        encounteredAnswers = []
                         clientAddress = None
                         clientQuery = None
                 elif data['rcode'] == 'NXDOMAIN' or data['rcode'] == 'FORMERR':
                     serverSocket.sendto(message, clientAddress) # Send it back to client for parsing.
+                    encounteredAnswers = []
                     clientAddress = None
                     clientQuery = None # End query resolving processs.
                 else:
