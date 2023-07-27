@@ -1,6 +1,7 @@
 import sys
 import socket
 import struct
+import copy
 
 # Codes determined using "RFC 1035 Section 3.2.2 Type Values"
 # Source: https://datatracker.ietf.org/doc/html/rfc1035
@@ -42,7 +43,6 @@ rcodeTypes = {
     4: "NOTIMP",
     5: "REFUSED",
 }
-
 dnsData = {}
 
 invertedTypes = {v: k for k, v in types.items()}
@@ -51,6 +51,97 @@ invertedClasses = {v: k for k, v in qclass.items()}
 
 dnsResponse = None
 
+def createQuery(queryType, name):
+
+    # The header contains the following fields:
+
+    #                                 1  1  1  1  1  1
+    #   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                      ID                       |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |QR|   Opcode  |AA|TC|RD|RA|   Z    |   RCODE   |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                    QDCOUNT                    |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                    ANCOUNT                    |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                    NSCOUNT                    |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                    ARCOUNT                    |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+    header_id = 0xABCE # Make this random
+
+    qr = 0
+    opcode = 0
+    aa = 0
+    tc = 0
+    rd = 0
+    ra = 0
+    z = 0
+    rcode = 0
+
+    header_flags = (qr << 15) | (opcode << 11) | (aa << 10) | (tc << 9) | (rd << 8) | (ra << 7) | (z << 4) | rcode
+
+    qdCount = 1
+    anCount = 0
+    nsCount = 0
+    arCount = 0
+
+    # Pack data into bytes, !HHHHHH, as we have 2 bytes for each part of the header, and 6
+    # parts of the header.
+    headerData = struct.pack('!HHHHHH',header_id, header_flags, qdCount, anCount, nsCount, arCount)
+
+    # Question section of query.
+    #                                 1  1  1  1  1  1
+    #   0  1  2  3  4  5  6  7  8  9  0  1  2  3  4  5
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                                               |
+    # /                     QNAME                     /
+    # /                                               /
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                     QTYPE                     |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+    # |                     QCLASS                    |
+    # +--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+--+
+
+    labels = name.split('.')
+
+    qname = b'' # Required to be byte literal like data from struct.pack
+
+    for label in labels:
+        length = len(label)
+
+        qname += struct.pack('!B', length) + label.encode()
+
+    qname += b'\x00'
+
+    qtype = types[queryType]
+
+    qclassInfo = qclass['IN']
+
+    question = qname + struct.pack("!HH", qtype, qclassInfo)
+
+    query = headerData + question
+
+    return query
+
+def checkIfAnswer(response):
+    if len(response) < 12:
+        return False
+    byteHeader = response[0:12] # First 12 bytes are the header as specified by RFC 1035.
+
+    unpackedHeader = struct.unpack('!HHHHHH', byteHeader) # Get header
+
+    qCount, ansCount, nsCount, arCount = unpackedHeader[2:] # Pos 0 is ID, Pos 1 is Flags, Pos 2-5 is counts
+
+    if ansCount > 0:
+        return True
+    # elif ansCount == 0 and nsCount > 0 and arCount == 0:
+    #     return True # If answer in ns section from NS query, and no additional section
+    #     # There is no next server to go to and the answer is in NS section.
+    return False
 
 def parseQuestion(response):
     index = 0
@@ -297,3 +388,56 @@ def parseResponse(response, answer):
     for count in range(0, arCount):
         answerIndex += parseAnswer(response[answerIndex:], 'additionals', answer)
     return dnsData
+
+def resolverIntermediaryQuery(dnsSocket, rootServers, clientQuery):
+    dnsSocket.settimeout(2)
+    currServer =  rootServers[0] # Get first root server IP
+    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+    while True:
+        timeOut = False
+        try:
+            message, address = dnsSocket.recvfrom(2048) # Recieve request from client
+            isAnswer = checkIfAnswer(message)
+        except socket.timeout:
+            isAnswer = False
+            timeOut = True
+        # Check if an answer was recieved from server.
+        if isAnswer:
+            data = parseResponse(message, False)
+            return parseResponse(message, False)
+        else:
+            if timeOut:
+                if currServer == rootServers[-1]:
+                    return {}
+                elif currServer in rootServers and currServer != rootServers[-1]:
+                    currServer = rootServers[rootServers.index(currServer) + 1]
+                    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                elif len(prevData['additionals']) > 0:
+                    currServer = prevData['additionals'][0]
+                    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                    prevData['additionals'].pop(0) # Remove exhausted ip
+                else:
+                    return {}
+            else:
+                data = parseResponse(message, False)
+                # If some issue occurs with the server, exhaust all ips
+                if data['rcode'] == 'SERVFAIL' or data['rcode'] == 'REFUSED' or data['additionals'] == []:
+                    if currServer == rootServers[-1]:
+                        return {}
+                    elif currServer in rootServers and currServer != rootServers[-1]:
+                        currServer = rootServers[rootServers.index(currServer) + 1]
+                        dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                    elif len(prevData['additionals']) > 0:
+                        currServer = prevData['additionals'][0]
+                        dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                        prevData['additionals'].pop(0) # Remove exhausted ip
+                    else:
+                        return {}
+                else:
+                    currServer = data['additionals'][0]
+                    dnsSocket.sendto(clientQuery, (currServer, 53)) # Else start sending to next server.
+                    data['additionals'].pop(0) # Remove exhausted ip
+
+                    if data['additionals'] != []:
+                        prevData = data
+                    # Only save data from last iterative query once a valid response was given.
