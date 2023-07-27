@@ -127,25 +127,12 @@ def createQuery(queryType):
     question = qname + struct.pack("!HH", qtype, qclassInfo)
 
     query = headerData + question
+
     # FORMERR query for testing
     # query = b'\x01\x00\x01\x00\x00\x01\x00\x00\x00\x00\x03www\x06example\x03com\x00\x00\x01\x00\x01'
+
     return query
 def encodePTRName(ipAdresss):
-    # # Split the IP address into its octets and reverse them
-    # reversed_ip_octets = ipAdresss.split('.')[::-1]
-
-    # # Append the ".in-addr.arpa" suffix
-    # reversed_ip_with_suffix = '.'.join(reversed_ip_octets) + ".in-addr.arpa"
-
-    # # Encode each label in the reversed IP address with its length
-    # encoded_labels = []
-    # for label in reversed_ip_with_suffix.split('.'):
-    #     encoded_labels.append(bytes([len(label)]) + label.encode('utf-8'))
-
-    # # Concatenate the encoded labels and add a null terminator
-    # encoded_qname = b''.join(encoded_labels) + b'\x00'
-
-    # return encoded_qname
     ipBytes = ipAdresss.split('.')
 
     ipBytes.reverse()
@@ -245,7 +232,7 @@ name = sys.argv[3]
 queryTypeArg = sys.argv[4].upper()
 
 if len(sys.argv) < 6:
-    timeout = 5
+    timeout = 10
 elif len(sys.argv) == 6:
     timeout = sys.argv[5]
 
@@ -264,7 +251,6 @@ except socket.timeout:
     print("ERROR TIMEOUT: Client did not recieve response within timeout period.")
     print(f"\nQuery time: {round(timeEnd - timeStart, 4)} sec")
     exit()
-
 
 if len(modifiedMessage) < 12:
     print("ERROR TIMEOUT: All DNS Servers contacted by resolver timed out.")
