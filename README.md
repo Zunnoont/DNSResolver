@@ -16,3 +16,11 @@ Client.py is a standard DNS IPV4 querier that generates IPV4 DNS queries of type
 
 [timeout=5]: Set a custom timeout period. Optional argument to set the amount of time waiting for a response from a DNS resolver. Default value is 5.
 
+# Resolver Usage
+
+```Usage: python3 Resolver.py [port] [timeout=5]```
+
+[port]: Port resolver is listening on. 
+
+[timeout=5]: Set a custom timeout period. Optional argument to set the amount of time waiting for an intermediary response from a server when attempting to resolve a DNS query. Default value is 5.
+
